@@ -1,0 +1,126 @@
+#!/bin/sh
+
+AVCT_guess()
+{
+    fgrep -q 'Avocent Corporation and its affiliates. All Rights Reserved.' $1
+}
+
+AVCT_session_open()
+{
+    local SID
+    eval `$curl -f -c - -X POST \
+         -d "user=$opt_user&password=$opt_passwd" \
+         "https://$hostip/data/login" | parse_cookie`
+    session="$_appwebSessionId_"
+}
+
+AVCT_session_close()
+{
+  echo ""
+    $curl -o /dev/null \
+          -b "_appwebSessionId_=$session" \
+          "https://$hostip/data/logout"
+}
+
+AVCT_mc_info()
+{
+    eval `$curl -b "_appwebSessionId_=$session" "https://$hostip/data?get=fwVersion,fwUpdated,productName" | \
+    tr -d '\042\047\n\r' | awk -F"[<>]" '{for(i=1;i<=NF;i++){if ($i ~ /^(fwVersion|fwUpdated|productName)$/){printf "%s=\x27%s\x27;\n",$(i),$(i+1)}}}'`
+    cat <<EOF
+Device ID                 : 32
+Device Revision           : 1
+Firmware Revision         : $fwVersion
+Build Time                : $fwUpdated
+IPMI Version              : 2.0
+Manufacturer ID           : 0
+Manufacturer Name         : Avocent Corp.
+Product ID                : 0 (0x0000)
+Product Name              : $productName
+EOF
+}
+
+AVCT_mc_reset_cold()
+{
+    $curl -o /dev/null \
+          -b "_appwebSessionId_=$session" \
+          "https://$hostip/data?set=reboot:1" # soft reboot
+#          "https://$hostip/data?set=resetToDefault:1" # hard reset
+}
+
+AVCT_kvm()
+{
+    case $2 in
+      VM)
+        $curl -f -o "$1" \
+        -b "_appwebSessionId_=$session" \
+        "https://$hostip/data?type=jnlp&get=vmStart($hostip@0@$(date +%s))" || return $?
+        ;;
+
+      *)
+        $curl -f -o "$1" \
+		    -b "_appwebSessionId_=$session" \
+		    "https://$hostip/viewer.jnlp.cgi($hostip@0@$(date +%s))" || return $?
+        ;;
+      esac
+}
+
+AVCT_redirect()
+{
+    local s rc=0
+    case "$2" in
+    cdrom)
+#    echo "Not Implemented"
+        AVCT_kvm "$1" VM || rc=$?
+        [ "$rc" -eq 0 -o "$rc" -eq 18 ] || return $rc
+        s=$(stat -c%s $3)
+        sed -n 's,.*<argument>,,; s,</argument>,,p' "$1" |
+        timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $redir_path/redirector.jar com.ipmitool6.AVCT.kvm.Redirector iso="$3" maxkb=$(((s - (s * 277) / 10000))) timeout=$((opt_timeout * 60))
+#        cnt="$(sed -n 's,[[:space:]]*<argument>\([^<]\+\)</argument>,\1,p' "$1" | wc -l)"
+##        rev=r1
+##        [ "$cnt" -ne 8 ] || rev=r2
+##        sed -n 's,[[:space:]]*<argument>\([^<]\+\)</argument>,\1,p' "$1" | tr '\n' ' ' |
+##            sed "s,^,$3 $(((s - (s * 277) / 10000) / 1024)) $opt_timeout $rev ," |
+##                timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $redir_path/redirector.jar com.ipmitool6.ATEN.kvm.Redirector
+        ;;
+    *)
+        error "Redirection for $2 not supported"
+        ;;
+    esac
+}
+
+AVCT_lan_print()
+{
+    # CONFIG_INFO.XML
+    # CONFIG_IPV6.XML
+    ipmitool -U $opt_user -P $opt_passwd -I lanplus -H $hostip_nb lan print
+}
+
+AVCT_lan_set()
+{
+  echo "Not Implemented"
+#    local get="$curl -b SID=$session http://$hostip"
+#    local fmt='+%a%%20%b%%20%d%%20%Y%%20%T%%20GMT%z%%20(%Z)'
+#    local cnt=0
+#
+#    case "$1" in
+#    fwup) shift
+#        [ -n "$1" ] || error "Image file not specified"
+#        [ -e "$1" ] || error "File \`$1' not exists"
+#        echo -n "Preparing BMC to flash [$session]..."
+#        $get/cgi/ipmi.cgi -G -d "LOCK_UPLOAD_FW.XML=(0,0)&time_stamp=$(LC_ALL=C date "$fmt")" | fgrep -q 'RES="1"' && echo done || error failed
+#        echo -n "Uploading image..."
+#        $get/cgi/oem_firmware_upload.cgi -m 300 -H 'Expect:' -f -F "form1=@$1;filename=firmware.bin;type=application/octet-stream" | fgrep -q 'UpgradeFW' && echo done || error failed
+#        echo "Flashing..."
+#        $get/cgi/oem_firmware_update.cgi -G -d "preserve_config=0&timeStamp=$(LC_ALL=C date "$fmt")" | egrep -q '^ok' || error 'startflash failed'
+#        while sleep 10; do
+#            percent=`$get/cgi/upgrade_process.cgi -G -d "time_stamp=$(LC_ALL=C date "$fmt")" | sed -n 's,<percent>\([0-9 ]\+\)</percent>,\1,p'` ||:
+#            printf "\rCompleted %s%%" "$percent"
+#            [ "$percent" != 100 ] || break
+#            cnt=$((cnt+1))
+#            [ "$cnt" -lt 5 ] || [ -n "$percent" -o "$percent" -ne 0 ] || error failed
+#        done
+#        printf "\nFlash complete. Rebooting...\n"
+#        session=
+#        ;;
+#    esac
+}

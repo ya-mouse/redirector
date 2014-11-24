@@ -1,0 +1,319 @@
+#!/bin/sh -e
+
+ipmi6_path=${0%/*}
+redir_path=${0%/*}/..
+[ "$ipmi6_path" != '/usr/bin' ] ||
+    ipmi6_path='/usr/share/ipmitool6' \
+    redir_path='/usr/share/ipmitool6'
+
+BMC_AVAILABLE=
+for bmc_type in $ipmi6_path/ipmitool6-*; do
+    [ -e "$bmc_type" ] || continue
+    . $bmc_type
+    BMC_AVAILABLE=${BMC_AVAILABLE:+$BMC_AVAILABLE }${bmc_type##*-}
+done
+
+usage()
+{
+    local rc=0
+    [ -z "$1" ] || rc=$1 shift
+    [ "$#" -lt 1 ] || echo "$@"
+    cat <<USAGE
+Usage: ipmitool6 [-U user] [-P password] [-H hostname] cmd
+
+Commands:
+    lan           Configure LAN Channels
+    chassis       Get chassis status and set power state
+    power         Shortcut to chassis power commands
+    mc            Management Controller status and global enables
+    sel           Print System Event Log (SEL)
+    user          Configure Management Controller users
+    kvm           Launch KVM session
+    redir         Start redirection
+
+USAGE
+    exit ${rc:-0}
+}
+
+error()
+{
+    echo "$@" 1>&2
+    exit 1
+}
+
+run_cmd()
+{
+    local func=$1; shift
+    type -t "cmd_$func" | fgrep -q function ||
+        error "Command \`$func' not recognized"
+    eval cmd_${func} $@
+}
+
+run_bmc()
+{
+    local func=$1; shift
+    type -t "${BMC}_${func}" | fgrep -q function ||
+        error "Function \`$func' not implemented for $BMC"
+    if [ -z "$session" -a "$func" != guess ]; then
+        eval ${BMC}_session_open
+        [ -n "$session" ] ||
+            error "Authorization failed"
+    fi
+    eval ${BMC}_${func} $@
+}
+
+TEMP=`getopt -o 46bU:P:I:H:t:h -n "ipmitool6" -- "$@" || usage 1>&2`
+
+eval set -- "$TEMP"
+
+BMC=
+timeout=60
+curl="curl -gqsk --compressed -m $timeout"
+
+opt_host=
+opt_timeout=5
+opt_family=
+opt_user=ADMIN
+opt_passwd=ADMIN
+while :; do
+    case "$1" in
+    -4) opt_family=A
+        ;;
+    -6) opt_family=AAAA
+        ;;
+    -b) opt_family=PRF_A  #prefer A first, then AAAA
+        ;;
+    -t) shift
+        opt_timeout="$1"
+        ;;
+    -U) shift
+        opt_user="$1"
+        ;;
+    -P) shift
+        opt_passwd="$1"
+        ;;
+    -H) shift
+        opt_host="$1"
+        ;;
+    -I) shift
+        # For compatability only. Skip interface type
+        ;;
+    -h)
+        usage 0
+        ;;
+    --) shift
+        break
+        ;;
+    esac
+    shift
+done
+
+[ -n "$opt_host" ] || error "Host not specified"
+
+[ -n "$1" ] || usage 1 "No command provided!"
+
+ipmi6_exit()
+{
+    trap - SEGV ABRT BUS FPE EXIT QUIT INT TERM
+    [ -z "$session" ] || run_bmc session_close
+    rm -f ${TMP:-/tmp}/ipmitool6-kvm.$$.jnlp*
+}
+
+get_ip()
+{
+    unset output
+    case "$opt_family" in 
+    A)
+        output=$(getent ahostsv4 "$1" |awk '$2 ~ /STREAM/ {print $1; exit 0}')
+        ;;
+    AAAA)
+        output=$(getent ahostsv6 "$1" |awk '$2 ~ /STREAM/ {print $1; exit 0}')
+        ;;
+    PRF_A)
+        output=$(getent ahostsv4 "$1" |awk '$2 ~ /STREAM/ {print $1; exit 0}')
+        [ -n "$output" ] || output=$(getent ahostsv6 "$1" |awk '$2 ~ /STREAM/ {print $1; exit 0}')
+        ;;
+    *)
+        output=$(getent ahosts "$1" |awk '$2 ~ /STREAM/ {print $1; exit 0}')
+        ;;
+    esac
+    [ -n "$output" ] || error "Host $1 ${opt_family:+($opt_family) }not found."
+    echo "$output"
+}
+
+parse_json()
+{
+    sed -n -e "s/'\([^']\+\)' : '\([^']\+\)'[ ,]/\1='\2';/gp;" \
+           -e "s/'\([^']\+\)' : \([^ ,]\+\)[ ,]/\1=\2;/gp" |
+       sed -e "s,^[ ]*.*:[ ]*\[,,g; s,[ ]*{[ ]*,,g; s/}.*//" | tail -1
+}
+
+parse_xml()
+{
+    sed -e 's,<?xml [^?]\+?>,,; s,[ ]*</\?[a-zA-Z0-9_]\+>[ ]*,,g;' \
+        -e 's,[ ]*<\([^ ]\+\) ,\1:\n,g; s,/>,\n,g;' \
+        -e 's,\([a-zA-Z0-9_]\+\)="\([^"]\+\)"[ ]\?,\1="\2"\n,g' |
+        awk 'BEGIN { sec="" }
+/^[a-zA-Z0-9_]+:$/ { sec=$1; sub(/.$/, "", sec) }
+/[a-zA-Z0-9_]=/ { print sec "_" $0 ";" }'
+}
+
+parse_cookie()
+{
+    sed 's/^#HttpOnly_//' |
+      awk "-vhostip=$hostip" '($1 == hostip || "[" $1 "]" == hostip) { print $6 "=\"" substr($0, index($0, $7)) "\";" }'
+}
+
+guess_bmc()
+{
+    hostip_nb="$(get_ip $opt_host)"
+    hostip="$(echo "$hostip_nb" | sed 's/\(^.*:.*$\)/[\1]/')"
+    [ -n "$hostip" ]
+    $curl -L -o /tmp/ipmitool6.guess.$$ http://$hostip/ ||
+        error "Connect to \`$hostip' failed"
+    for bmc_type in $BMC_AVAILABLE ''; do
+        [ -n "$bmc_type" ] || break
+        BMC=$bmc_type
+        ! run_bmc guess /tmp/ipmitool6.guess.$$ || break
+        BMC=
+    done
+    rm -f /tmp/ipmitool6.guess.$$
+
+    [ -n "$BMC" ] || error "Couldn't guess BMC type"
+
+    trap ipmi6_exit SEGV ABRT BUS FPE EXIT QUIT INT TERM
+}
+
+cmd_mc()
+{
+    case "$1" in
+    info)
+        run_bmc mc_info
+        ;;
+    reset) shift
+        case "$1" in
+        cold|warm)
+            run_bmc mc_reset_${1}
+            unset session
+            echo "Sent cold reset command to MC"
+            ;;
+        *)
+            error "reset commands: cold"
+            ;;
+        esac
+        ;;
+    '')
+        cat <<EOF
+MC Commands:
+  reset <cold>
+  info
+EOF
+        ;;
+    *)
+        usage 1 "Invalid command: $1"
+        ;;
+    esac
+}
+
+cmd_kvm()
+{
+    local rc=0
+    local jnlp="${TMP:-/tmp}/ipmitool6-kvm.$$.jnlp"
+    run_bmc kvm "$jnlp" || rc=$?
+    [ "$rc" -eq 0 -o "$rc" -eq 18 -o -s "$jnlp" ]
+    case "$(file --mime-type -b $jnlp)" in
+    text/html)
+        cat <<EOF>$jnlp.policy
+grant {
+  permission java.security.AllPermission;
+};
+EOF
+        appletviewer -J-Djava.security.policy=$jnlp.policy "$jnlp"
+        ;;
+    application/x-java-jnlp*|application/xml|text/plain)
+        javaws -Xnosplash -wait "$jnlp"
+        ;;
+    text/x-shellscript)
+        sh -e "$jnlp"
+        ;;
+    *)
+        error "Unsupported file type: $(file --mime-type -b $jnlp)"
+        ;;
+    esac
+}
+
+cmd_redir()
+{
+    cmd_redirect $@
+}
+
+cmd_redirect()
+{
+    local rc=0
+    local redir="${TMP:-/tmp}/ipmitool6-kvm.$$.redir"
+    [ -n "$1" ] || error "Wrong command"
+    [ "${1##*_}" = "nfs" ] || [ -e "$2" ] || error "Path not exists: $2"
+    export LD_LIBRARY_PATH=$redir_path/$BMC
+    run_bmc redirect "$redir" $@|| rc=$?
+    [ "$rc" -eq 0 -o "$rc" -eq 18 ]
+}
+
+cmd_chassis()
+{
+    echo "Not implemented"
+}
+
+cmd_power()
+{
+    echo "Not implemented"
+}
+
+cmd_lan()
+{
+    case "$1" in
+    print) shift
+        run_bmc lan_print
+        ;;
+    set) shift
+        run_bmc lan_set "$@"
+        ;;
+    *)
+        usage 1 "Wrong command"
+        ;;
+    esac
+}
+
+cmd_user()
+{
+    echo "Not implemented"
+}
+
+cmd_sel()
+{
+    echo "Not implemented"
+}
+
+timeout_pass()
+{
+    unset sign
+    case "$1" in
+        -? )
+            sign="${1#-*}"
+            shift
+            ;;
+    esac
+    [ -n "$timeout_bin" ] || { which "timeout.real" >/dev/null 2>&1 && export timeout_bin="timeout.real" || export timeout_bin="timeout"; }
+    [ -n "$timeout_real" ] || { "$timeout_bin" --version 2>/dev/null | grep -q coreutils && export timeout_real="coreutils" || export timeout_real="orig"; }
+    case "$timeout_real" in
+        coreutils )
+            xargs "$timeout_bin" ${sign:+-s"$sign"} $@
+            ;;
+        orig)
+            xargs "$timeout_bin" ${sign:+-"$sign"} $@
+            ;;
+    esac
+
+}
+
+guess_bmc
+run_cmd $@

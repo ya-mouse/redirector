@@ -1,0 +1,102 @@
+#!/bin/sh
+
+HP_guess()
+{
+    fgrep -q "lights-out100_rgb.jpg" $1
+}
+
+HP_session_open()
+{
+    session="$($curl --digest -v -u "$opt_user:$opt_passwd" http://$hostip/ 2>&1 | egrep '(Authorization:|Unauthorized\. Please Log In)' | sed 's,^> ,,')"
+    ! echo $session | fgrep -q 'Unauthorized' || session=
+}
+
+HP_session_close()
+{
+    $curl -H "$session" -o /dev/null -u "$opt_user:$opt_passwd" \
+        http://$hostip/loggedout.html
+}
+
+HP_mc_info()
+{
+    eval `$curl -H "$session" http://$hostip/ |
+        sed 's,<TR>,\n,g; s,</\?TD>, ,g; s,[ ]*</TR>,,g' | awk '
+/IPMI Version/ { print "ipmiver=" $3 ";" }
+/Firmware Version/ { print "fwver=" $3 ";" }
+/Hardware Version/ { print "hwver=" $3 ";" }
+/Description/ { print "desc=\"" substr($0, index($0,$2)) "\";" }
+/System GUID/ { print "guid=\"" $3 "\";" }
+'`
+    cat <<EOF
+Device ID                 : 18
+Device Revision           : $hwver
+Firmware Revision         : $fwver
+IPMI Version              : $ipmiver
+Manufacturer ID           : 11
+Manufacturer Name         : Hewlett-Packard
+Product ID                : 0 (0x0000)
+Product Name              : $desc
+System GUID               : $guid
+EOF
+}
+
+HP_mc_reset_cold()
+{
+    error "Not implemented"
+}
+
+HP_kvm()
+{
+    $curl -H "$session" http://$hostip/kvms.html | fgrep 'APPLET CODE' |
+              sed -e 's,<PARAM,\n<PARAM,g' \
+                  -e 's,M2\.JAR,M2.jar,' \
+                  -e 's,<BR>.*,\n</APPLET>,' |
+              sed -ne 's,<PARAM NAME="\([^"]\+\)" VALUE="\([^"]\+\)"[ ]*>,"\1=\2",p' |
+                  xargs -r /bin/echo -e  "#!/bin/sh -e\n"java -jar $redir_path/HP/M2.JAR com.serverengines.mahogany.MahoganyViewer.class >> $1
+}
+
+HP_redirect()
+{
+    local s rc=0
+    case "$2" in
+    cdrom)
+        HP_kvm "$1" || rc=$?
+        [ "$rc" -eq 0 -o "$rc" -eq 18 ] || return $rc
+        # Activate KVM first
+        if [ ! -s "$1" ]; then
+            # FIXME: Check license type in /kvms.html
+            . $HOME/.ipmitool6/hp-keys
+            $curl -o /dev/null -G -H "$session" -d Submit=Apply \
+                  -d Lkey1=$key1 -d Lkey2=$key2 -d Lkey3=$key3 -d Lkey4=$key4 -d Lkey5=$key5 \
+                  -e http://$hostip/lkey.html \
+                  http://$hostip/lkey.html
+
+            $curl -o /dev/null -G -H "$session" \
+                  -d OKCANCEL=1 -d OK_BUTTON=Ok \
+                  -e "http://$hostip/lkey.html?Lkey1=$key1&Lkey2=$key2&Lkey3=$key3&Lkey4=$key4&Lkey5=$key5&Submit=Apply" \
+                  http://$hostip/lkey.html
+            HP_kvm "$1" || rc=$?
+            [ "$rc" -eq 0 -o "$rc" -eq 18 ] || return $rc
+        fi
+        s=$(stat -c%s $3)
+        s=$(((s - (s * 277) / 10000) / 1024))
+        selfip="$(ifconfig ${I6_KVM_ETH:-eth0} | awk '$1 == "inet" { print substr($2,6) }')"
+        [ -n "$selfip" ] || selfip=127.0.0.1
+        cut -d\  -f4- "$1" | tr ' ' '\n' | tr '=' ' ' | awk "-vpath=$3" -vselfip="$selfip" -vtimeout=$((opt_timeout / 2)) -vsz=$s '
+$1 == "username" { user = $2 }
+$1 == "port" { port = $2 }
+$1 == "ipaddress" { ipa = $2 }
+$1 == "httpdata" { key = $2 }
+END { print path, ipa, port, user, key, selfip, sz, timeout }' |
+            timeout_pass -9 $((opt_timeout * 30 + 20)) java -cp $redir_path/redirector.jar com.ipmitool6.HP.kvm.Redirector ||:
+        ;;
+    *)
+        error "Redirection for $2 not supported"
+        ;;
+    esac
+}
+
+HP_lan_print()
+{
+    ipmitool -U $opt_user -P $opt_passwd -I lanplus -H $hostip_nb lan print
+}

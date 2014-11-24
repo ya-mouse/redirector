@@ -1,9 +1,10 @@
-SUBDIRS=AMI ATEN AVCT HUAWEI HP
+SUBDIRS=AMI ATEN AVCT HUAWEI HP src
 
 all: $(SUBDIRS) redirector.jar
 
 install: all
 	install -pD -m644 redirector.jar $(DESTDIR)/usr/share/ipmitool6/redirector.jar
+	make -C src install
 
 redirector.jar:
 	rm -rf class; mkdir class

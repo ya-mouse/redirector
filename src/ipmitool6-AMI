@@ -1,0 +1,237 @@
+#!/bin/sh
+
+AMI_guess()
+{
+    if ! fgrep -q 'window.location.href = "/page/login.html";' $1; then
+        # fgrep -q '<title>Server System</title>' $1 || return 1
+        fgrep -q '"/Java/jviewer.jnlp";' $1 || return 1
+        if fgrep -q 'gPageDir+"header.html"' $1; then
+            ami_is6=Supermicro
+        else
+            ami_is6=Quanta
+        fi
+    fi
+}
+
+AMI_session_open()
+{
+    local SESSION_COOKIE
+    eval `$curl -f \
+          -d "WEBVAR_USERNAME=$opt_user&WEBVAR_PASSWORD=$opt_passwd" \
+          "http://$hostip/rpc/WEBSES/create.asp" | parse_json`
+    session="$SESSION_COOKIE"
+    [ "$session" != 'Failure_Login_IPMI_Then_LDAP_then_Active_Directory' ] || session=
+    [ "$session" != 'Failure_Login_IPMI_Then_LDAP_then_Active_Directory_Radius' ] || session=
+}
+
+AMI_session_close()
+{
+    $curl -o /dev/null \
+          -b "SessionCookie=$session" \
+          "http://$hostip/rpc/WEBSES/logout.asp"
+}
+
+AMI_mc_info()
+{
+    local mfg
+    if [ -n "$ami_is6" ]; then
+        eval `$curl -b "SessionCookie=$session" \
+             "http://$hostip/rpc/getfwinfo.asp" | parse_json`
+        DATE="$FirmwareBuildDate"
+        TIME="$FirmwareBuildTime"
+    else
+        eval `$curl -b "SessionCookie=$session" \
+             "http://$hostip/rpc/getbldtime.asp" | parse_json`
+        eval `$curl -b "SessionCookie=$session" \
+             "http://$hostip/rpc/getdeviceid.asp" | parse_json`
+    fi
+    # ipmirev = getbits(_sa.IPMIVersion,3,0) + "." + getbits(_sa.IPMIVersion,7,4)
+    # fwrev   = getbits(_sa.FirmwareRevision1,6,0) + "." + (_sa.FirmwareRevision2>>4) + getbits(_sa.FirmwareRevision2,3,0)
+    mfg="$(printf "%d" $(((MfgID_1 << 8) + MfgID_0)))"
+    cat <<EOF
+Device ID                 : $DeviceID
+Device Revision           : $DevRevision
+Firmware Revision         : $(printf "%x.%x" 0x$FirmwareRevision1 $FirmwareRevision2)
+IPMI Version              : $(printf "%0.1f" $IPMIVersion)
+Build Time                : $DATE $TIME
+Manufacturer ID           : $mfg
+Manufacturer Name         : ${ami_is6:-Unknown} ($(printf "0x%x" $mfg))
+Product ID                : $ProdID ($(printf "0x%x" $ProdID))
+Product Name              : Unknown ($(printf "0x%x" $ProdID))
+EOF
+    if [ "$mfg" = 47488 ]; then
+        eval `$curl -b "SessionCookie=$session" \
+             "http://$hostip/rpc/getmbmac.asp" | parse_json | tr 'A-Z' 'a-z'`
+        cat << EOF
+System MAC Address 1      : $mac1
+System MAC Address 2      : $mac2
+EOF
+    fi
+}
+
+AMI_mc_reset_cold()
+{
+    $curl -v -o /dev/null 2>&1 \
+          -b "SessionCookie=$session" \
+          "http://$hostip/rpc/rebootcard.asp" |
+              while read s; do
+                  ! echo "$s" | fgrep -q 'HTTP/1.0 200 OK' || break
+              done
+}
+
+AMI_kvm()
+{
+    $curl -o "$1" \
+          -b "SessionCookie=$session" \
+          "http://$hostip/Java/jviewer.jnlp?EXTRNIP=$hostip&JNLPSTR=JViewer"
+    if egrep -q '(Document Error:|Not Found)' "$1"; then
+        sed -n "s/.*<p>/IPMI ($hostip): /p" "$1" | sed 's,</p>.*,,'
+        return 13
+    fi
+}
+
+AMI_redirect()
+{
+    local s rc=0
+    case "$2" in
+    cdrom)
+        AMI_kvm "$1" || rc=$?
+        [ "$rc" -eq 0 -o "$rc" -eq 18 ] || return $rc
+        s=$(stat -c%s $3)
+        (if [ "$(fgrep '<argument>' $1 | wc -l)" -lt 10 ]; then
+            # Assume that it's ASUS
+            sed -n -e 's,[[:space:]]*<argument>\([^<]\+\),\1\n,g; s,\x02,,' -e  's,</argument>,,p' $1 | tr '\n' ' ' |
+                awk '{print $1, $2, $3, 0, 0, 5120, 5123, 511, 5900, 1, "EN", $4 }'
+         elif fgrep -q '<argument>-hostname</argument>' $1; then
+            # Assume that it's AMI6 Supermicro
+            sed -n 's,^[[:space:]]*<argument>\([^<]\+\)</argument>,\1,p' $1 | sed -e '{H; N; s/\n/ /; s,^-,,}' |
+                awk -vcp=5120 -vfp=5122 -vhp=5123 -vkp=7578 -vl=EN -vvs=0 -vks=0 '
+/hostname/ { h=$2 }
+/kvmtoken/ { kt=$2 }
+/kvmsecure/ { ks=$2 }
+/vmsecure/ { vs=$2 }
+/kvmport/ { kp=$2 }
+/cdport/ { cp=$2 }
+/fdport/ { fp=$2 }
+/hdport/ { hp=$2 }
+/lang/ { l=$2 }
+/webcookie/ { wc=$2 }
+END { print h, kp, kt, ks, vs, cp, fp, 511, 5900, 1, l, wc }'
+         else
+            # Assume that it's Supermicro
+            sed -n 's,[[:space:]]*<argument>\([^<]\+\)</argument>,\1,p' $1 | tr '\n' ' '
+         fi) |
+            sed "s,$, $3 $(((s - (s * 277) / 10000) / 1024)) $opt_timeout," |
+                timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $redir_path/redirector.jar com.ipmitool6.AMI.kvm.Redirector
+        ;;
+    cdrom_nfs)
+          case "$3" in
+            NULL)
+                $curl -o /dev/null -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/startredirection.asp" \
+                  -d "IMAGE_TYPE=CD/DVD&START_BIT=0" &&
+                $curl -o /dev/null -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/setmediaimage.asp" \
+                  -d "IMAGE_NAME=&IMAGE_OPER=3&IMAGE_TYPE=CD/DVD&MEDIA_TYPE=2" &&
+                $curl -o /dev/null -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/setmediacfg.asp" \
+                  -d "RMEDIAENABLE=0&IP_ADDR=&SRC_PATH=&SHR_TYPE=0&UNAME=&PWORD=&DOMAIN_NAME=" ||
+                error "Something went wrong with redirection via web."
+            ;;
+            CHECK)
+                $curl -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/getrmediacfg.asp" |
+                 grep -q 'CD/DVD' && echo "CD redirection is supported." 1>&2 || error "CD redirection is not supported or work incorrectly."
+            ;;
+            *)
+              [ -n "$3" ] || error "Image name not specified."
+              [ -n "$4" ] || error "Server address not specified."
+              echo "Enabling redirection..." 1>&2
+              $curl -o /dev/null -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/setmediacfg.asp" \
+                -d "RMEDIAENABLE=1&IP_ADDR=$4&SRC_PATH=${5:-/srv/nfs}&SHR_TYPE=0&UNAME=&PWORD=&DOMAIN_NAME=" &&
+              $curl -o /dev/null -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/setmediaimage.asp" \
+                -d "IMAGE_NAME=$3&IMAGE_OPER=1&IMAGE_TYPE=CD/DVD&MEDIA_TYPE=2" &&
+              sleep 5 &&
+              $curl -o /dev/null -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/startredirection.asp" \
+                -d "IMAGE_TYPE=CD/DVD&START_BIT=1"
+              echo 'Waiting...' 1>&2
+              unset welldone
+              for i in `seq 24`; do
+                sleep 5
+                eval `$curl -m 20 -f -b "SessionCookie=$session" "http://$hostip/rpc/getrmediacfg.asp" |
+                  sed -n 's/{.*}.*{\(.*\)}.*{.*}.*{}.*/\1/p' | parse_json`
+                if [ "$START_FLAG" = "1" ]
+                then
+                    [ "$STATUS_FLAG" != "0" ] || { welldone=1; break;}
+                else
+                  error "Something went wrong with redirection via web."
+                fi
+              done
+              [ -n "$welldone" ] || error "Timeout reached. Failed to start redirection."
+            ;;
+          esac
+        ;;
+    *)
+        error "Redirection for $2 not supported"
+        ;;
+    esac
+}
+
+AMI_lan_print()
+{
+    ipmitool -U $opt_user -P $opt_passwd -H $hostip_nb lan print
+}
+
+AMI_lan_set()
+{
+    local get="$curl -b 'SessionCookie=$session;Username=$opt_user' http://$hostip"
+
+    case "$1" in
+    bonding) shift
+        $curl -v -o /dev/null 2>&1 \
+              -b "SessionCookie=$session; Username=$opt_user; PNO=4; gMultiLAN=false; settings={eth:[2],ethstr:['bond0'],lan:[1],features:'NWBONDING,SERVICES,NWLINK,PRESERVECONF,WEB_PREVIEW,PAM_REORDERING,'}" \
+              -d "BOND_ENABLE=$1&BOND_IFC=1" \
+              "http://$hostip/rpc/setnwbondcfg.asp" |
+                  while read s; do
+                      ! echo "$s" | fgrep -q 'HTTP/1.0 200 OK' || break
+                  done
+#        $curl -v -o /dev/null \
+#              -b "SessionCookie=$session" \
+#              -d "channelNum=1&v4IPSource=2&v6Enable=0&vlanEnable=0" \
+#              "http://$hostip/rpc/setnwconfig.asp" |
+#                  while read s; do
+#                      ! echo "$s" | fgrep -q 'HTTP/1.0 200 OK' || break
+#                  done
+        echo "Bonding has been set to $1"
+        session=
+        ;;
+    factory)
+        $curl -v -o /dev/null 2>&1 \
+              -b "SessionCookie=$session; Username=$opt_user; PNO=4; settings={eth:[2],ethstr:['bond0'],lan:[1],features:'NWBONDING,SERVICES,NWLINK,PRESERVECONF,WEB_PREVIEW,PAM_REORDERING,'};" \
+              "http://$hostip/rpc/setfactorydefaults.asp" |
+                  while read s; do
+                      ! echo "$s" | fgrep -q 'HTTP/1.0 200 OK' || break
+                  done
+        echo "Settings has been set to factory"
+        session=
+        ;;
+    fwup) shift
+        [ -n "$1" ] || error "Image file not specified"
+        [ -e "$1" ] || error "File \`$1' not exists"
+        echo -n "Preparing BMC to flash [$session]..."
+        $get/rpc/prepflash.asp -m 300 | fgrep -q 'HAPI_STATUS:0' && echo done || error failed
+        $get/rpc/getromfilesize.asp | fgrep -q 'HAPI_STATUS:0' || error 'getromfilesize failed'
+        $get/rpc/flashfile_upload_starts.asp | fgrep -q 'HAPI_STATUS:0' || error 'flashfile_upload_starts failed'
+        echo -n "Uploading image..."
+        $get/page/file_upload.html -m 300 -v -F "/mnt/rom.ima?33554432=@$1" | fgrep -q 'impl/file_upload_imp' && echo done || error failed
+        echo -n "Verifying image..."
+        $get/rpc/verifyimage.asp -m 300 | fgrep -q 'HAPI_STATUS:0' && echo done || error failed
+        echo "Flashing..."
+        $get/rpc/startflash.asp -d WEBVAR_PRESERVECFG=0 | fgrep -q 'HAPI_STATUS:0' || error 'startflash failed'
+        while sleep 10; do
+            FLASHPROGRESS=
+            eval `$get/rpc/flashstatus.asp | parse_json` ||:
+            printf "\r%s(%d) %s" "$FLASHSUBACTION" $FLSTATE "$FLASHPROGRESS"
+            [ -n "$FLASHPROGRESS" -a "${FLASHPROGRESS##100%}" = "$FLASHPROGRESS" ] || break
+        done
+        echo "Flash complete. Rebooting..."
+        session=
+        ;;
+    esac
+}

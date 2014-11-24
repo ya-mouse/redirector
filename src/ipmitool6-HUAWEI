@@ -1,0 +1,107 @@
+#!/bin/sh
+
+HUAWEI_guess()
+{
+    fgrep "top.location.href = 'https://" $1 | fgrep -q '/login.asp?'
+}
+
+HUAWEI_session_open()
+{
+    eval "$($curl -fk -c - -X POST \
+         -b "session=deleted" \
+         -d "UserName=$opt_user&Password=$opt_passwd" \
+         -d "domain=0&lang=en&authenticateType=0&login=Log+In" \
+         -r "https://$hostip/login.asp?lang=en" \
+         "https://$hostip/goform/Login" | parse_cookie)"
+    [ "$session" != 'deleted' ] || session=
+}
+
+HUAWEI_session_close()
+{
+    $curl -ko /dev/null \
+          -b "session=$session" \
+          "https://$hostip/goform/Logout"
+}
+
+HUAWEI_mc_info()
+{
+    eval `$curl -k -b "session=$session" \
+         "https://$hostip/firmversion.asp" | awk '
+BEGIN { is_bmc=0 }
+/iMana Firmware Version/ { is_bmc=1 }
+/<td[ ]+noWrap=true/ && (is_bmc) { c=substr($0, index($0,")")+1); print "fwver=\"" substr(c, 0, length(c)-6) "\";" }
+/<\/tr>/ { is_bmc=0 }
+'`
+    eval `$curl -k -b "session=$session" \
+         "https://$hostip/macaddr.asp" | awk '
+BEGIN { is_mac=0; is_cpu=0; is_dimm=0; dimm_max=0; }
+/MAC Address [1-2]/ { is_mac=$5+0 }
+/CPU[1-2]/ { is_cpu=substr($0, index($0, "CPU")+3, 1) }
+/DIMM[0-9]+/ { is_dimm=substr($0, index($0, "DIMM")+4, 2)+0; dimm_max=is_dimm }
+/<td[ ]+class=/ && (is_mac) { print "mac" is_mac "=" tolower(substr($2, 12, 17)) ";" }
+/<td[ ]+class=/ && (is_cpu) { c=substr($0, index($0,">")+1); print "cpu" is_cpu "=\"" substr(c, 0, length(c)-5) "\";" }
+/<td[ ]+class=/ && (is_dimm) { c=substr($0, index($0,">")+1); print "dimm" is_dimm "=\"" substr(c, 0, length(c)-5) "\";" }
+/<\/tr>/ { is_mac=0; is_cpu=0; is_dimm=0 }
+END { print "dimm_max=" dimm_max ";" }
+'`
+    cat <<EOF
+Firmware Revision         : $fwver
+IPMI Version              : 2.0
+Manufacturer ID           : 2011
+Manufacturer Name         : Unknown (0x7DB)
+Product ID                : 43649 (0xaa81)
+Product Name              : Unknown (0xAA81)
+MAC Address 1             : $mac1
+MAC Address 2             : $mac2
+CPU1                      : $cpu1
+CPU2                      : $cpu2
+EOF
+    for i in `seq 1 $dimm_max`; do
+        printf "DIMM%-22d: $(eval echo \$dimm$i)\n" $i
+    done
+}
+
+HUAWEI_mc_reset_cold()
+{
+    error "Not implemented"
+}
+
+HUAWEI_kvm()
+{
+    echo "<html><body>" > $1
+    $curl -k -b "session=$session" \
+          "https://$hostip/kvmvmm.asp" | awk '/<object/, /<\/object/ { print $0 }' |
+              sed -e 's,WIDTH = "100%",WIDTH = "800",' \
+                  -e 's,HEIGHT = "100%",HEIGHT = "600",' \
+                  -e "s,CODEBASE VALUE =.*,CODEBASE VALUE = \"http://folgaine1.yandex-team.ru/bios\" >," \
+                  -e "s,CODEBASE =.*,CODEBASE = \"http://folgaine1.yandex-team.ru/bios\" \\\," >> $1
+    echo "</body></html>" >> $1
+}
+
+HUAWEI_redirect()
+{
+    local s rc=0
+    case "$2" in
+    cdrom)
+        HUAWEI_kvm "$1" || rc=$?
+        [ "$rc" -eq 0 -o "$rc" -eq 18 ] || return $rc
+        s=$(stat -c%s $3)
+        s=$(((s - (s * 277) / 10000) / 1024))
+        sed 's,=,= ,g' "$1" | awk "-vpath=$3" -vtimeout=$opt_timeout -vsz=$s '
+$1 == "verifyValue" { value = $3 }
+$1 == "IPA" { ipa = $3 }
+END { print path, ipa, value, sz, timeout }' |
+            timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $redir_path/redirector.jar com.ipmitool6.HUAWEI.kvm.Redirector
+        ;;
+    *)
+        error "Redirection for $2 not supported"
+        ;;
+    esac
+}
+
+HUAWEI_lan_print()
+{
+    eval `$curl -k -b "session=$session" \
+         "https://$hostip/snmptrap.asp" | sed -n 's,.*trapcommunity.*value="\([^"]\+\)".*,snmp="\1",p'`
+    ipmitool -U $opt_user -P $opt_passwd -I lanplus -H $hostip_nb lan print | sed "s,SNMP Community.*,SNMP Community String   : $snmp,"
+}
