@@ -1,0 +1,5 @@
+bean/InfoRepository*.class
+bean/VirtualUsbInfo.class
+ikvm/Redirector*.class
+ikvm/ui/RemoteVideo*.class
+vstorage/VirtualStorage*.class

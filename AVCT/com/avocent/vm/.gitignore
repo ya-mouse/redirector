@@ -1,0 +1,8 @@
+AX509TrustManager*.class
+ApplianceSession*.class
+JFrameVirtualMedia*.class
+LocalDrives*.class
+SessionParameters.class
+VirtualMedia*.class
+!VirtualMediaListener.class
+abstractJFrameVM.class
