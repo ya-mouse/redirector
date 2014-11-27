@@ -87,7 +87,7 @@ ATEN_redirect()
         [ "$cnt" -ne 8 ] || rev=r2
         sed -n 's,[[:space:]]*<argument>\([^<]\+\)</argument>,\1,p' "$1" | tr '\n' ' ' |
             sed "s,^,$3 $(((s - (s * 277) / 10000) / 1024)) $opt_timeout $rev ," |
-                timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $redir_path/redirector.jar com.ipmitool6.ATEN.kvm.Redirector
+                timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $java_path/redirector.jar com.redirerctor.ATEN.kvm.Redirector
         ;;
     *)
         error "Redirection for $2 not supported"

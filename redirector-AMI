@@ -122,7 +122,7 @@ END { print h, kp, kt, ks, vs, cp, fp, 511, 5900, 1, l, wc }'
             sed -n 's,[[:space:]]*<argument>\([^<]\+\)</argument>,\1,p' $1 | tr '\n' ' '
          fi) |
             sed "s,$, $3 $(((s - (s * 277) / 10000) / 1024)) $opt_timeout," |
-                timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $redir_path/redirector.jar com.ipmitool6.AMI.kvm.Redirector
+                timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $java_path/redirector.jar com.redirector.AMI.kvm.Redirector
         ;;
     cdrom_nfs)
           case "$3" in

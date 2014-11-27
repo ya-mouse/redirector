@@ -1,4 +1,4 @@
-package com.ipmitool6.HUAWEI.kvm;
+package com.redirector.HUAWEI.kvm;
 
 import com.huawei.vm.console.management.ConsoleControllers;
 import com.huawei.vm.console.storage.impl.CDROMDriver;

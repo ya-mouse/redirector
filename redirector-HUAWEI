@@ -91,7 +91,7 @@ HUAWEI_redirect()
 $1 == "verifyValue" { value = $3 }
 $1 == "IPA" { ipa = $3 }
 END { print path, ipa, value, sz, timeout }' |
-            timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $redir_path/redirector.jar com.ipmitool6.HUAWEI.kvm.Redirector
+            timeout_pass -9 $((opt_timeout * 60 + 15)) java -cp $java_path/redirector.jar com.redirector.HUAWEI.kvm.Redirector
         ;;
     *)
         error "Redirection for $2 not supported"

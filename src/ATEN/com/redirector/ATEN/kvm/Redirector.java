@@ -1,4 +1,4 @@
-package com.ipmitool6.ATEN.kvm;
+package com.redirector.ATEN.kvm;
 
 import tw.com.aten.bean.*;
 import tw.com.aten.vstorage.VirtualStorage;

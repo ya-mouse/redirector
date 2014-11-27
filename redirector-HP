@@ -52,7 +52,7 @@ HP_kvm()
                   -e 's,M2\.JAR,M2.jar,' \
                   -e 's,<BR>.*,\n</APPLET>,' |
               sed -ne 's,<PARAM NAME="\([^"]\+\)" VALUE="\([^"]\+\)"[ ]*>,"\1=\2",p' |
-                  xargs -r /bin/echo -e  "#!/bin/sh -e\n"java -jar $redir_path/HP/M2.JAR com.serverengines.mahogany.MahoganyViewer.class >> $1
+                  xargs -r /bin/echo -e  "#!/bin/sh -e\n"java -jar $java_path/HP/M2.JAR com.serverengines.mahogany.MahoganyViewer.class >> $1
 }
 
 HP_redirect()
@@ -65,7 +65,7 @@ HP_redirect()
         # Activate KVM first
         if [ ! -s "$1" ]; then
             # FIXME: Check license type in /kvms.html
-            . $HOME/.ipmitool6/hp-keys
+            . $HOME/.redirector/hp-keys
             $curl -o /dev/null -G -H "$session" -d Submit=Apply \
                   -d Lkey1=$key1 -d Lkey2=$key2 -d Lkey3=$key3 -d Lkey4=$key4 -d Lkey5=$key5 \
                   -e http://$hostip/lkey.html \
@@ -88,7 +88,7 @@ $1 == "port" { port = $2 }
 $1 == "ipaddress" { ipa = $2 }
 $1 == "httpdata" { key = $2 }
 END { print path, ipa, port, user, key, selfip, sz, timeout }' |
-            timeout_pass -9 $((opt_timeout * 30 + 20)) java -cp $redir_path/redirector.jar com.ipmitool6.HP.kvm.Redirector ||:
+            timeout_pass -9 $((opt_timeout * 30 + 20)) java -cp $java_path/redirector.jar com.redirector.HP.kvm.Redirector ||:
         ;;
     *)
         error "Redirection for $2 not supported"

@@ -1,4 +1,4 @@
-package com.ipmitool6.HP.kvm;
+package com.redirector.HP.kvm;
 
 import com.serverengines.mahogany.MahoganyViewer;
 

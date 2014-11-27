@@ -1,13 +1,13 @@
 #!/bin/sh -e
 
-ipmi6_path=${0%/*}
-redir_path=${0%/*}/src
-[ "$ipmi6_path" != '/usr/bin' ] ||
-    ipmi6_path='/usr/share/ipmitool6' \
-    redir_path='/usr/share/ipmitool6'
+tool_path=${0%/*}
+java_path=${0%/*}/src
+[ "$tool_path" != '/usr/bin' ] ||
+    tool_path='/usr/share/redirector' \
+    java_path='/usr/share/redirector'
 
 BMC_AVAILABLE=
-for bmc_type in $ipmi6_path/ipmitool6-*; do
+for bmc_type in $tool_path/redirector-*; do
     [ -e "$bmc_type" ] || continue
     . $bmc_type
     BMC_AVAILABLE=${BMC_AVAILABLE:+$BMC_AVAILABLE }${bmc_type##*-}
@@ -19,7 +19,7 @@ usage()
     [ -z "$1" ] || rc=$1 shift
     [ "$#" -lt 1 ] || echo "$@"
     cat <<USAGE
-Usage: ipmitool6 [-U user] [-P password] [-H hostname] cmd
+Usage: redirector [-U user] [-P password] [-H hostname] cmd
 
 Commands:
     lan           Configure LAN Channels
@@ -62,7 +62,7 @@ run_bmc()
     eval ${BMC}_${func} $@
 }
 
-TEMP=`getopt -o 46bU:P:I:H:t:h -n "ipmitool6" -- "$@" || usage 1>&2`
+TEMP=`getopt -o 46bU:P:I:H:t:h -n "redirector" -- "$@" || usage 1>&2`
 
 eval set -- "$TEMP"
 
@@ -116,7 +116,7 @@ ipmi6_exit()
 {
     trap - SEGV ABRT BUS FPE EXIT QUIT INT TERM
     [ -z "$session" ] || run_bmc session_close
-    rm -f ${TMP:-/tmp}/ipmitool6-kvm.$$.jnlp*
+    rm -f ${TMP:-/tmp}/redirector-kvm.$$.jnlp*
 }
 
 get_ip()
@@ -169,15 +169,15 @@ guess_bmc()
     hostip_nb="$(get_ip $opt_host)"
     hostip="$(echo "$hostip_nb" | sed 's/\(^.*:.*$\)/[\1]/')"
     [ -n "$hostip" ]
-    $curl -L -o /tmp/ipmitool6.guess.$$ http://$hostip/ ||
+    $curl -L -o /tmp/redirector.guess.$$ http://$hostip/ ||
         error "Connect to \`$hostip' failed"
     for bmc_type in $BMC_AVAILABLE ''; do
         [ -n "$bmc_type" ] || break
         BMC=$bmc_type
-        ! run_bmc guess /tmp/ipmitool6.guess.$$ || break
+        ! run_bmc guess /tmp/redirector.guess.$$ || break
         BMC=
     done
-    rm -f /tmp/ipmitool6.guess.$$
+    rm -f /tmp/redirector.guess.$$
 
     [ -n "$BMC" ] || error "Couldn't guess BMC type"
 
@@ -218,7 +218,7 @@ EOF
 cmd_kvm()
 {
     local rc=0
-    local jnlp="${TMP:-/tmp}/ipmitool6-kvm.$$.jnlp"
+    local jnlp="${TMP:-/tmp}/redirector-kvm.$$.jnlp"
     run_bmc kvm "$jnlp" || rc=$?
     [ "$rc" -eq 0 -o "$rc" -eq 18 -o -s "$jnlp" ]
     case "$(file --mime-type -b $jnlp)" in
@@ -250,10 +250,10 @@ cmd_redir()
 cmd_redirect()
 {
     local rc=0
-    local redir="${TMP:-/tmp}/ipmitool6-kvm.$$.redir"
+    local redir="${TMP:-/tmp}/redirector-kvm.$$.redir"
     [ -n "$1" ] || error "Wrong command"
     [ "${1##*_}" = "nfs" ] || [ -e "$2" ] || error "Path not exists: $2"
-    export LD_LIBRARY_PATH=$redir_path/$BMC
+    export LD_LIBRARY_PATH=$java_path/$BMC
     run_bmc redirect "$redir" $@|| rc=$?
     [ "$rc" -eq 0 -o "$rc" -eq 18 ]
 }

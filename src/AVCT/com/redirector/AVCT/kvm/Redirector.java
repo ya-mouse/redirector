@@ -1,4 +1,4 @@
-package com.ipmitool6.AVCT.kvm;
+package com.redirector.AVCT.kvm;
 
 import com.avocent.vm.VirtualMedia;
 

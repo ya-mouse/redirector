@@ -1,4 +1,4 @@
-package com.ipmitool6.AMI.kvm;
+package com.redirector.AMI.kvm;
 
 import com.ami.iusb.IUSBRedirSession;
 import java.lang.InterruptedException;
