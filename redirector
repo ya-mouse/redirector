@@ -112,7 +112,7 @@ done
 
 [ -n "$1" ] || usage 1 "No command provided!"
 
-ipmi6_exit()
+redir_exit()
 {
     trap - SEGV ABRT BUS FPE EXIT QUIT INT TERM
     [ -z "$session" ] || run_bmc session_close
@@ -181,7 +181,7 @@ guess_bmc()
 
     [ -n "$BMC" ] || error "Couldn't guess BMC type"
 
-    trap ipmi6_exit SEGV ABRT BUS FPE EXIT QUIT INT TERM
+    trap redir_exit SEGV ABRT BUS FPE EXIT QUIT INT TERM
 }
 
 cmd_mc()
