@@ -1,7 +1,7 @@
 #!/bin/sh -e
 
 ipmi6_path=${0%/*}
-redir_path=${0%/*}/..
+redir_path=${0%/*}/src
 [ "$ipmi6_path" != '/usr/bin' ] ||
     ipmi6_path='/usr/share/ipmitool6' \
     redir_path='/usr/share/ipmitool6'

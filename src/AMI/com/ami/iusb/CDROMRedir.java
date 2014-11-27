@@ -15,7 +15,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 // Referenced classes of package com.ami.iusb:
-//            RedirProtocolException, RedirectionException
+//            RedirProtocolException, RedirectionException, EN_StrTable
 
 public class CDROMRedir extends Thread
 {
@@ -63,9 +63,7 @@ public class CDROMRedir extends Thread
         {
             cdromConnect(s, i, flag);
             SendAuth_SessionToken(s1);
-            //System.out.println("waiting to receive request");
             IUSBSCSI iusbscsi = recvRequest();
-            //System.out.println("out of receive request");
             if(iusbscsi.opcode == 241)
             {
                 if(iusbscsi.connectionStatus != 1)
@@ -100,7 +98,8 @@ public class CDROMRedir extends Thread
         if(nativeReaderPointer == -1L)
             newCDROMReader(physicalDrive);
         sourceCDROM = s2;
-        if(!openCDROM(s2))
+        try {
+        if(!openCDROM(s2.getBytes("UTF-8")))
         {
             System.err.println(EN_StrTable.GetString("4_7_CDROMREDIR"));
             deleteCDROMReader();
@@ -113,6 +112,12 @@ public class CDROMRedir extends Thread
             redirThread.start();
             running = true;
             return true;
+        }
+        } catch (Exception e) {
+            System.err.println(EN_StrTable.GetString("4_7_CDROMREDIR"));
+            deleteCDROMReader();
+            cdromDisconnect();
+            return false;
         }
     }
 
@@ -202,7 +207,6 @@ public class CDROMRedir extends Thread
                     return;
                 }
             }
-        //System.out.println("Exiting the CDROM/ISO Redirection thread");
     }
 
     public String[] getCDROMList()
@@ -303,7 +307,7 @@ public class CDROMRedir extends Thread
 
     private native void deleteCDROMReader();
 
-    private native boolean openCDROM(String s);
+    private native boolean openCDROM(byte abyte0[]);
 
     private native void closeCDROM();
 
@@ -341,11 +345,12 @@ public class CDROMRedir extends Thread
     {
         try
         {
-            System.loadLibrary("javacdromwrapper");
+            System.loadLibrary("javacdromwrapper"+System.getProperty("sun.arch.data.model"));
         }
         catch(UnsatisfiedLinkError unsatisfiedlinkerror)
         {
             System.err.println(EN_StrTable.GetString("4_1_CDROMREDIR"));
+            System.exit(1);
         }
     }
 }

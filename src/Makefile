@@ -1,13 +1,22 @@
-all:
+SUBDIRS=AMI ATEN AVCT HUAWEI HP
 
-install:
-	for bin in ipmitool6; do \
-	    install -pD -m755 $$bin $(DESTDIR)/usr/bin/$$bin; \
-	done
-	for ipmi6 in ipmitool6-AMI ipmitool6-ATEN ipmitool6-HUAWEI ipmitool6-HP ipmitool6-AVCT; do \
-	    install -pD -m644 $$ipmi6 $(DESTDIR)/usr/share/ipmitool6/$$ipmi6; \
-	done
+all: $(SUBDIRS) redirector.jar
 
-distclean clean:
+install: all
+	install -pD -m644 redirector.jar $(DESTDIR)/usr/share/ipmitool6/redirector.jar
 
-.PHONY: all install clean distclean
+redirector.jar:
+	rm -rf class; mkdir class
+	for d in $(SUBDIRS); do rsync -a $$d/ class/; done
+	cd class; find -name "*.class" -o -name "*.properties" -o -name "lib*.so" -o -name "LIB*.SO" -o -name "*.gif" | \
+	    xargs jar cfe $(CURDIR)/$@ com/ipmitool6/AMI/kvm/Redirector
+
+$(SUBDIRS):
+	make -C $@ $(MAKECMDGOALS)
+
+clean: $(SUBDIRS)
+	rm -rf class redirector.jar
+
+distclean: clean
+
+.PHONY: all install clean distclean $(SUBDIRS) redirector.jar
